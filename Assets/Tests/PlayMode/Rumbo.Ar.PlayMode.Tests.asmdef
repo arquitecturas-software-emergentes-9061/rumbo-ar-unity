@@ -1,0 +1,6 @@
+{
+    "name": "Rumbo.Ar.PlayMode.Tests",
+    "references": ["Rumbo.Ar.Domain"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

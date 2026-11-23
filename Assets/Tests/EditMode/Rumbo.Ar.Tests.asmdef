@@ -1,0 +1,7 @@
+{
+    "name": "Rumbo.Ar.Tests",
+    "references": ["Rumbo.Ar.Domain"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

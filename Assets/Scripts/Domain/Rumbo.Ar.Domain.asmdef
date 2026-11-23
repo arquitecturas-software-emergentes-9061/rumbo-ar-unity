@@ -1,0 +1,5 @@
+{
+    "name": "Rumbo.Ar.Domain",
+    "rootNamespace": "Rumbo.Ar.Domain",
+    "noEngineReferences": true
+}

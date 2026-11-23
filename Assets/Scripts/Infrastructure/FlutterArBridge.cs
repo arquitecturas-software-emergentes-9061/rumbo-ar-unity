@@ -1,11 +1,35 @@
 using System;
 using System.IO;
+using Rumbo.Ar.Domain;
 using UnityEngine;
 
 namespace Rumbo.Ar.Infrastructure
 {
     public static class FlutterArBridge
     {
+        public const string ReceiverObjectName = "RumboArController";
+
+        // Called by existing controller receivers, via UnityPlayer.UnitySendMessage on Android's main thread.
+        // No new Java methods or channels are assumed.
+        public static bool TryRead<T>(string json, out T message, out string error) where T : NavigationContext
+        {
+            message = null;
+            error = "invalid_json";
+            if (string.IsNullOrWhiteSpace(json) || json.Length > 524288 ||
+                !json.TrimStart().StartsWith("{", StringComparison.Ordinal) || !json.TrimEnd().EndsWith("}", StringComparison.Ordinal)) return false;
+            try
+            {
+                message = JsonUtility.FromJson<T>(json);
+                if (message == null || message.protocolVersion != 1) { error = "unsupported_protocol"; return false; }
+                error = null;
+                return true;
+            }
+            catch (Exception e) when (e is ArgumentException || e is InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
         public static void Report(string state, string reason = "")
         {
             var timestamp = DateTime.UtcNow.ToString("O");
