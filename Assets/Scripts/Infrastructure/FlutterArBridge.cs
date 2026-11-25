@@ -54,6 +54,34 @@ namespace Rumbo.Ar.Infrastructure
 
         static string Cell(string value) => value.Replace("\r", " ").Replace("\n", " ").Replace("\"", "\"\"");
 
+        public static void AttachAndroidPlayer()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using var player = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                using var activity = player.GetStatic<AndroidJavaObject>("currentActivity");
+                using var bridge = new AndroidJavaClass("com.uitopic.rumbo.RumboArBridge");
+                bridge.CallStatic("attachPlayer", activity);
+            }
+            catch (Exception error) { Debug.LogWarning("Flutter host unavailable: " + error.Message); }
+#endif
+        }
+
+        public static double MagneticHeading()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using var bridge = new AndroidJavaClass("com.uitopic.rumbo.RumboArBridge");
+                return bridge.CallStatic<double>("cameraMagneticHeading");
+            }
+            catch (Exception) { return double.NaN; }
+#else
+            return double.NaN;
+#endif
+        }
+
         public static float InitialHeading()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR

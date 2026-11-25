@@ -68,6 +68,26 @@ namespace Rumbo.Ar.Tests
         }
 
         [Test]
+        public void InitialDisplacementAlignsMapAxesAndRejectsAnInconsistentWalk()
+        {
+            Assert.That(HeadingAlignment.TryYaw(0, 3, new SpatialPoint(3, 0, 0), out var yaw), Is.True);
+            Assert.That(yaw, Is.EqualTo(90).Within(.001));
+            Assert.That(HeadingAlignment.TryYaw(0, 3, new SpatialPoint(.2, 0, 0), out _), Is.False);
+            Assert.That(HeadingAlignment.TryYaw(0, 3, new SpatialPoint(7, 0, 0), out _), Is.False);
+            Assert.That(HeadingAlignment.MagneticYawAdjustment(350, 15, 0, 20), Is.EqualTo(1).Within(.001));
+            Assert.That(HeadingAlignment.MagneticYawAdjustment(350, 90, 0, 20), Is.Zero);
+        }
+
+        [TestCase(-50, "left")]
+        [TestCase(50, "right")]
+        [TestCase(355, "straight")]
+        [TestCase(180, "around")]
+        public void TurnsUseSignedRelativeHeading(double yaw, string expected)
+        {
+            Assert.That(HeadingAlignment.Instruction(yaw), Is.EqualTo(expected));
+        }
+
+        [Test]
         public void MapTransformUsesDistinctOriginScaleYawAndElevation()
         {
             Calibrated(90, 2, new SpatialPoint(4, 3, 5));

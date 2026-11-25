@@ -56,6 +56,15 @@ namespace Rumbo.Ar.Domain
     }
 
     [Serializable]
+    public sealed class PositionFixMessage : NavigationContext
+    {
+        public string nodeId;
+        public long capturedAtUnixMs;
+        public double[] position;
+        public double[] metersPerMapUnit;
+    }
+
+    [Serializable]
     public sealed class BleReferenceMessage : NavigationContext
     {
         public string arSpaceId;

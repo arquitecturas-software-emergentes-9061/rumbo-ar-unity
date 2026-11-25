@@ -51,6 +51,7 @@ namespace Rumbo.Ar.Domain
         }
 
         public bool HasRoute => route != null;
+        public bool Matches(NavigationContext context) => SameContext(route, context);
         public bool IsCalibrated => calibration != null;
         public bool Arrived { get; private set; }
         public int ActiveIndex => activeIndex;

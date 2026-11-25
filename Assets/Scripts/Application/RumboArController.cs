@@ -26,6 +26,14 @@ namespace Rumbo.Ar.Application
         string arSpaceId;
         string calibrationReferenceId;
         VioSample calibrationReference;
+        PositionFixMessage firstFix;
+        VioSample firstPose;
+        double magneticBias;
+        double firstMagnetic, firstCameraYaw;
+        long lastPositionFixAt;
+        int largeResiduals;
+        string lastInstruction;
+        readonly List<Canvas> demoCanvases = new();
         Transform sessionSpace;
         Matrix4x4 anchorInSession;
         bool hadNavigationAnchor;
@@ -60,6 +68,7 @@ namespace Rumbo.Ar.Application
             noPlaneSince = statusChangedAt;
             FlutterArBridge.Report("started", "demo_direction_only");
             FlutterArBridge.Report("navigation_ready", $"protocolVersion=1;arSpaceId={arSpaceId}");
+            FlutterArBridge.AttachAndroidPlayer();
             ARSession.stateChanged += OnSessionStateChanged;
             planeManager.trackablesChanged.AddListener(OnPlanesChanged);
             EnableSessionAfterCameraPermission();
@@ -152,6 +161,7 @@ namespace Rumbo.Ar.Application
                 HideArrow("tracking_unreliable");
                 vioHistory.Clear();
                 calibrationReferenceId = null;
+                firstFix = null;
                 navigation.PauseCorrection();
             }
         }
@@ -207,6 +217,18 @@ namespace Rumbo.Ar.Application
         public void Exit() => FlutterArBridge.ReturnToFlutter();
 
         [UnityEngine.Scripting.Preserve]
+        public void ResetDemo(string degrees)
+        {
+            ClearAnchor();
+            navigation = new NavigationSession(navigationSettings);
+            ResetSpatialReference("demo");
+            foreach (var canvas in demoCanvases)
+                if (canvas != null) canvas.gameObject.SetActive(true);
+            demoCanvases.Clear();
+            SetHeading(degrees);
+        }
+
+        [UnityEngine.Scripting.Preserve]
         public void ReceiveRoute(string json)
         {
             if (!FlutterArBridge.TryRead<RouteMessage>(json, out var message, out var error) || !navigation.ReceiveRoute(message, out error))
@@ -217,10 +239,16 @@ namespace Rumbo.Ar.Application
                 ClearAnchor();
                 vioHistory.Clear();
                 calibrationReferenceId = null;
+                firstFix = null;
+                lastPositionFixAt = 0;
+                magneticBias = 0;
+                largeResiduals = 0;
+                lastInstruction = null;
             }
             HideArrow("route_updated");
             UpdateModeLabel();
             ReportNavigation("route_accepted", navigation.IsCalibrated ? "" : "calibration_required");
+            if (VioAvailable) FlutterArBridge.Report("normal", "route_attached");
         }
 
         [UnityEngine.Scripting.Preserve]
@@ -283,6 +311,98 @@ namespace Rumbo.Ar.Application
             { Reject("ble", "vio_sample_unavailable"); return; }
             if (!navigation.ReceiveBle(message, arSpaceId, sample, now, VioAvailable, out error)) { Reject("ble", error); return; }
             ReportNavigation("ble_accepted");
+        }
+
+        [UnityEngine.Scripting.Preserve]
+        public void ReceivePositionFix(string json)
+        {
+            if (!FlutterArBridge.TryRead<PositionFixMessage>(json, out var fix, out _) ||
+                !navigation.Matches(fix) || !NavigationSession.Id(fix.nodeId) ||
+                !NavigationSession.Coordinates(fix.position) ||
+                fix.metersPerMapUnit == null || fix.metersPerMapUnit.Length != 1 ||
+                !VioAvailable || fix.capturedAtUnixMs <= lastPositionFixAt) return;
+
+            var scale = fix.metersPerMapUnit[0];
+            var now = UtcNowMs;
+            if (!NavigationSession.Finite(scale) || scale < .0001 || scale > 1000 ||
+                fix.capturedAtUnixMs > now || now - fix.capturedAtUnixMs > 2000) return;
+            vioHistory.Add(new VioSample(now, CameraInStableSpace()));
+            if (!vioHistory.TryAt(fix.capturedAtUnixMs, navigationSettings.maximumVioSkewMs, out var pose)) return;
+            lastPositionFixAt = fix.capturedAtUnixMs;
+
+            if (navigation.IsCalibrated)
+            {
+                var reference = new BleReferenceMessage {
+                    protocolVersion = 1, sessionId = fix.sessionId, siteId = fix.siteId,
+                    floorId = fix.floorId, mapVersion = fix.mapVersion, arSpaceId = arSpaceId,
+                    calibrationId = navigation.CalibrationId, capturedAtUnixMs = fix.capturedAtUnixMs,
+                    position = fix.position, confidence = new[] { .8 }
+                };
+                if (navigation.ReceiveBle(reference, arSpaceId, pose, now, true, out var error))
+                    largeResiduals = 0;
+                else if (error == "ble_offset_exceeds_limit" && ++largeResiduals >= 3)
+                    ResetSpatialReference("persistent_drift");
+                return;
+            }
+
+            var magnetic = FlutterArBridge.MagneticHeading();
+            var cameraYaw = CameraYaw();
+            if (firstFix == null || fix.capturedAtUnixMs - firstFix.capturedAtUnixMs > 45000)
+            {
+                firstFix = fix;
+                firstPose = pose;
+                firstMagnetic = magnetic;
+                firstCameraYaw = cameraYaw;
+                ReportNavigation("calibration_walk");
+                return;
+            }
+            if (fix.nodeId == firstFix.nodeId) return;
+            var dx = (fix.position[0] - firstFix.position[0]) * scale;
+            var dz = (fix.position[1] - firstFix.position[1]) * scale;
+            if (!HeadingAlignment.TryYaw(dx, dz, pose.Position - firstPose.Position, out var yaw))
+                return;
+            if (!TryCameraHeight(out var height)) return;
+            magneticBias = HeadingAlignment.MagneticYawAdjustment(firstMagnetic, magnetic, firstCameraYaw, cameraYaw);
+            var referenceId = Guid.NewGuid().ToString("N");
+            var origin = (double[])fix.position.Clone();
+            origin[2] += height / scale;
+            var calibration = new CalibrationMessage {
+                protocolVersion = 1, sessionId = fix.sessionId, siteId = fix.siteId, floorId = fix.floorId,
+                mapVersion = fix.mapVersion, arSpaceId = arSpaceId, calibrationId = referenceId,
+                referenceId = referenceId, mapOrigin = origin, yawDegrees = new[] { yaw },
+                metersPerMapUnit = new[] { scale }, confidence = new[] { .8 }
+            };
+            if (navigation.Calibrate(calibration, arSpaceId, referenceId, pose, now, out _))
+            {
+                firstFix = null;
+                ReportNavigation("calibration_accepted");
+            }
+        }
+
+        bool TryCameraHeight(out double height)
+        {
+            height = 0;
+            var cameraPosition = arCamera.transform.position;
+            if (!raycastManager.Raycast(new Ray(cameraPosition, Vector3.down), hits, TrackableType.PlaneWithinPolygon))
+                return false;
+            foreach (var hit in hits)
+            {
+                var plane = planeManager.GetPlane(hit.trackableId);
+                var distance = cameraPosition.y - hit.pose.position.y;
+                if (plane != null && plane.alignment == PlaneAlignment.HorizontalUp &&
+                    plane.trackingState == TrackingState.Tracking && distance >= .75f && distance <= 2.3f)
+                    height = Math.Max(height, distance);
+            }
+            return height > 0;
+        }
+
+        double CameraYaw()
+        {
+            var cameraForward = arCamera.transform.forward;
+            var forward = hadNavigationAnchor && anchor != null
+                ? anchorInSession.MultiplyVector(anchor.transform.InverseTransformDirection(cameraForward))
+                : sessionSpace.InverseTransformDirection(cameraForward);
+            return NavigationSession.HeadingDegrees(default, Point(forward));
         }
 
         // Explicitly required after AR reset/lost anchor or a floor/context change. Keeps route and destination.
@@ -378,11 +498,24 @@ namespace Rumbo.Ar.Application
             var visible = navigation.CanGuide(true, anchor.trackingState == TrackingState.Tracking, selectedPlane.trackingState == TrackingState.Tracking);
             arrow.SetActive(visible);
             SetGuideState(visible ? "visible" : "anchor_or_surface_unreliable");
+            if (visible)
+            {
+                var instruction = HeadingAlignment.Instruction(
+                    NavigationSession.HeadingDegrees(camera, target) - CameraYaw() - magneticBias);
+                var meters = (int)Math.Ceiling((target - camera).HorizontalLength);
+                var nextInstruction = $"turn={instruction};meters={meters}";
+                if (nextInstruction != lastInstruction)
+                {
+                    lastInstruction = nextInstruction;
+                    ReportNavigation("guidance", nextInstruction);
+                }
+            }
         }
 
         void SetGuideState(string state)
         {
             if (state != "visible" && arrow != null) arrow.SetActive(false);
+            if (state != "visible") lastInstruction = null;
             if (guideState == state) return;
             guideState = state;
             ReportNavigation("navigation_guide", state);
@@ -390,9 +523,12 @@ namespace Rumbo.Ar.Application
 
         void UpdateModeLabel()
         {
-            foreach (var label in FindObjectsByType<UnityEngine.UI.Text>(FindObjectsSortMode.None))
-                if (label.text.StartsWith("DEMO", StringComparison.Ordinal))
-                    label.text = "Ruta AR · Requiere calibración y superficie del piso detectada";
+            foreach (var canvas in FindObjectsByType<Canvas>(FindObjectsSortMode.None))
+                if (canvas.renderMode == RenderMode.ScreenSpaceOverlay)
+                {
+                    demoCanvases.Add(canvas);
+                    canvas.gameObject.SetActive(false);
+                }
         }
 
         void ResetSpatialReference(string reason)
@@ -400,6 +536,11 @@ namespace Rumbo.Ar.Application
             navigation.InvalidateCalibration();
             vioHistory.Clear();
             calibrationReferenceId = null;
+            firstFix = null;
+            lastPositionFixAt = 0;
+            largeResiduals = 0;
+            magneticBias = 0;
+            lastInstruction = null;
             arSpaceId = Guid.NewGuid().ToString("N");
             ClearAnchor();
             guideState = null;
