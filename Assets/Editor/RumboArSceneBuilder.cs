@@ -204,6 +204,9 @@ namespace Rumbo.Editor
                 !EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Android, BuildTarget.Android))
                 throw new System.InvalidOperationException("Could not activate the Android build target.");
             System.IO.Directory.CreateDirectory("Builds/Android");
+            // Some Android drivers fail to import the ARCore camera buffer under Vulkan.
+            PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
+            PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { UnityEngine.Rendering.GraphicsDeviceType.OpenGLES3 });
             EditorUserBuildSettings.exportAsGoogleAndroidProject = true;
             var options = new BuildPlayerOptions {
                 scenes = new[] { ScenePath },
