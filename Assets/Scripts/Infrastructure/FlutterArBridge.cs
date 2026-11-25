@@ -101,9 +101,8 @@ namespace Rumbo.Ar.Infrastructure
         {
             Report("closed");
 #if UNITY_ANDROID && !UNITY_EDITOR
-            using var player = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
-            using var activity = player.GetStatic<AndroidJavaObject>("currentActivity");
-            activity.Call("finish");
+            using var bridge = new AndroidJavaClass("com.uitopic.rumbo.RumboArBridge");
+            bridge.CallStatic("returnToFlutter");
 #endif
         }
     }
